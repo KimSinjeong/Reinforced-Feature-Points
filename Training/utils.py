@@ -243,13 +243,13 @@ def desc_sampling(matches, pts_stack, desc_stack):
 
     for i in range(len(matches)):
         match_dist[i, 0] = matches[i].distance
-        d1[:, i] = desc1[np.int(matches[i].queryIdx), :]
-        d2[:, i] = desc2[np.int(matches[i].trainIdx), :]
+        d1[:, i] = desc1[int(matches[i].queryIdx), :]
+        d2[:, i] = desc2[int(matches[i].trainIdx), :]
 
     match_prob = softmax(match_dist).reshape(len(matches, ))
     #     match_prob = scipy.special.softmax(-match_dist).reshape(len(matches,))
     match_array = np.arange(len(matches))
-    match_sampling = np.int(0.5 * len(matches))
+    match_sampling = int(0.5 * len(matches))
     temp = np.random.choice(match_array, match_sampling, p=match_prob, replace=True)
     #     temp_prob = match_prob[temp]
 
@@ -260,10 +260,10 @@ def desc_sampling(matches, pts_stack, desc_stack):
     prob_samp = np.zeros((len(matches)))
 
     for j in range(match_sampling):
-        p1[:, j] = pts_stack[0][:, np.int(matches[temp[j]].queryIdx)]
-        p2[:, j] = pts_stack[1][:, np.int(matches[temp[j]].trainIdx)]
-        d_1[:, j] = desc1[np.int(matches[temp[j]].queryIdx), :]
-        d_2[:, j] = desc2[np.int(matches[temp[j]].trainIdx), :]
+        p1[:, j] = pts_stack[0][:, int(matches[temp[j]].queryIdx)]
+        p2[:, j] = pts_stack[1][:, int(matches[temp[j]].trainIdx)]
+        d_1[:, j] = desc1[int(matches[temp[j]].queryIdx), :]
+        d_2[:, j] = desc2[int(matches[temp[j]].trainIdx), :]
 
     p_stack.append(p1)
     p_stack.append(p2)
@@ -286,8 +286,8 @@ def desc_sampling(matches, pts_stack, desc_stack):
     d1_grad = torch.zeros(256, desc1.shape[0])
     d2_grad = torch.zeros(256, desc2.shape[0])
     for k in range(len(matches)):
-        d1_grad[:, np.int(matches[k].queryIdx)] = d1_tensor.grad[:, k]
-        d2_grad[:, np.int(matches[k].trainIdx)] = d2_tensor.grad[:, k]
+        d1_grad[:, int(matches[k].queryIdx)] = d1_tensor.grad[:, k]
+        d2_grad[:, int(matches[k].trainIdx)] = d2_tensor.grad[:, k]
     d_grad.append(d1_grad.data.cpu().numpy())
     d_grad.append(d2_grad.data.cpu().numpy())
 
