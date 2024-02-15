@@ -6,6 +6,8 @@ from networks import SuperPointNet, CNNet
 import torch
 import torch.nn as nn
 
+import pygcransac
+
 class SuperPointFrontend(object):
     def __init__(self, weights_path, nms_dist, conf_thresh, nn_thresh, cuda):
         self.name = 'SuperPoint'
@@ -296,7 +298,7 @@ def desc_sampling(matches, pts_stack, desc_stack):
     return p_stack, d_stack, d_grad, match_sampling
 
 
-def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, img2_idx, db_index, inlierThreshold):
+def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, img2_idx, db_index, inlierThreshold, im_size1, im_size2, ransac_type=0):
     desc1 = desc_stack[0].T
     desc2 = desc_stack[1].T
     tot_loss = np.zeros((1, 1))
@@ -314,7 +316,25 @@ def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, im
     pts2 = cv2.undistortPoints(pts2, K2, None)
     K = np.eye(3, 3)
 
-    E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.FM_RANSAC, threshold=inlierThreshold)
+    if ransac_type == 0:
+        E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.FM_RANSAC, threshold=inlierThreshold)
+    elif ransac_type == 1:
+        E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.FM_PROSAC, threshold=inlierThreshold)
+    else:# ransac_type == 2:
+        # print("Concat shape: ", np.concatenate((pts1, pts2), axis=-1).shape)
+        E, mask = pygcransac.findEssentialMatrix(
+            np.ascontiguousarray(np.concatenate((pts1, pts2), axis=-1)[:,0,:]), 
+            K, K,
+            im_size1[0], im_size1[1], im_size2[0], im_size2[1],
+            probabilities = [],
+            threshold = inlierThreshold,
+            conf = 0.99999, # RANSAC confidence
+            max_iters = 1000,
+            min_iters = 1000,
+            sampler = 0) # Uniform Sampler
+        mask = mask.reshape(-1, 1).astype(np.uint8)
+    # print("mask type and contents: ", type(mask), mask.shape, mask.dtype, flush=True)
+    # exit(0)
     inliers, R, t, mask = cv2.recoverPose(E, pts1, pts2, K, mask=mask)
 
     #     print("Found %d good matches." % len(matches), "Final inlier count: ", inliers)

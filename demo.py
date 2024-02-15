@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+import pygcransac
     
 def softmax(x):
     """Compute softmax values for each sets of scores in x."""
@@ -47,6 +47,8 @@ def parsing():
     parser.add_argument('--vthreshold', type=float, default=0.5, help='visibility threshold')
     parser.add_argument('--cuda', action='store_true',
       help='Use cuda GPU to speed up network processing speed (default: False)')
+    parser.add_argument('--ransac', '-ransac',type=int, default=0,
+                        help='0 OpenCV-RANSAC, 1 OpenCV-PROSAC, 2-GCRANSAC.')
     opt = parser.parse_args()
     opt.cuda = True
     return opt
@@ -168,8 +170,24 @@ for i, vis_pair in enumerate(vis_pairs):
         pts2 = cv.undistortPoints(pts2, K2, None)
         K = np.eye(3, 3)
 
-
-        E, mask = cv.findEssentialMat(pts1, pts2, K, method = cv.FM_RANSAC, threshold = inlierThreshold)
+        # E, mask = cv.findEssentialMat(pts1, pts2, K, method = cv.FM_RANSAC, threshold = inlierThreshold)
+        if opt.ransac == 0:
+          E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.FM_RANSAC, threshold=inlierThreshold)
+        elif opt.ransac == 1:
+          E, mask = cv.findEssentialMat(pts1, pts2, K, method=cv.FM_PROSAC, threshold=inlierThreshold)
+        else:# ransac_type == 2:
+          # print("Concat shape: ", np.concatenate((pts1, pts2), axis=-1).shape)
+          E, mask = pygcransac.findEssentialMatrix(
+              np.ascontiguousarray(np.concatenate((pts1, pts2), axis=-1)[:,0,:]), 
+              K, K,
+              img1.shape[0], img1.shape[1], img2.shape[0], img2.shape[1],
+              probabilities = [],
+              threshold = inlierThreshold,
+              conf = 0.99999, # RANSAC confidence
+              max_iters = 1000,
+              min_iters = 1000,
+              sampler = 0) # Uniform Sampler
+        mask = mask.reshape(-1, 1).astype(np.uint8)
         inliers, R, t, mask = cv.recoverPose(E, pts1, pts2, K, mask = mask) #Getting the rotation matrix and translation vector from image pair
 
         print("Found %d good matches." % len(matches))

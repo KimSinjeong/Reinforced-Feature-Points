@@ -6,7 +6,7 @@ import torch
 from utils import desc_map, desc_sampling, error_calculator
 
 
-def train_one_epoch(model_bbone: torch.nn.Module,optimizer: torch.optim.Optimizer, cr_check, data_dir, img_files, cal_db, vis_pairs_mod, samp_pts, threshold, epoch, output_dir):
+def train_one_epoch(model_bbone: torch.nn.Module,optimizer: torch.optim.Optimizer, cr_check, data_dir, img_files, cal_db, vis_pairs_mod, samp_pts, threshold, epoch, output_dir, ransac_type):
     temp = 0
     lamda1 = 1
     mean_loss_heap = []
@@ -49,8 +49,11 @@ def train_one_epoch(model_bbone: torch.nn.Module,optimizer: torch.optim.Optimize
             loss_mini = []
             for desc_itera in range(3):
                 pts_stack, desc_stack, desc_grad, match_samples = desc_sampling(matched, pts_stack_1, desc_stack_1)
+                # print("Image 1 and 2 path: ", data_dir[db_index] + img_files[db_index][img1_idx][:-1],
+                #       data_dir[db_index] + img_files[db_index][img2_idx][:-1], flush=True)
+                # print("Image 1 and Image 2 Shapes: ", img1.shape, img2.shape, flush=True)
                 loss = error_calculator(pts_stack, desc_stack, lamda1, match_samples, cal_db, img1_idx, img2_idx,
-                                         db_index, threshold)
+                                         db_index, threshold, img1.shape, img2.shape, ransac_type)
                 if (np.isnan(loss[0, 0]) == True):
                     loss[0, 0] = temp
                 loss_stack.append(loss[0, 0])

@@ -29,6 +29,8 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, help='start epoch')
     parser.add_argument('--epochs', default=50, type=int, help = 'number of epochs')
     parser.add_argument('--output_dir', default='output', type=str, help='turn on training for blackbox')
+    parser.add_argument('--ransac', '-ransac',type=int, default=0,
+                        help='0 OpenCV-RANSAC, 1 OpenCV-PROSAC, 2-GCRANSAC.')
     return parser
 
 def main(args):
@@ -39,7 +41,7 @@ def main(args):
     data_dir, img_files, vis_pairs, cal_db = build_dataset(args.dataset1, args.dataset2, args.vthreshold1, args.vthreshold2)
     for epoch in range(50):
         random.shuffle(vis_pairs)
-        train_one_epoch(model_bbone, optimizer, args.cr_check, data_dir, img_files, cal_db, vis_pairs, args.samp_pts, args.threshold, epoch, args.output_dir)
+        train_one_epoch(model_bbone, optimizer, args.cr_check, data_dir, img_files, cal_db, vis_pairs, args.samp_pts, args.threshold, epoch, args.output_dir, args.ransac)
 
 
 
