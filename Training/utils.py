@@ -6,7 +6,9 @@ from networks import SuperPointNet, CNNet
 import torch
 import torch.nn as nn
 
+import random
 import pygcransac
+import ngransac
 
 class SuperPointFrontend(object):
     def __init__(self, weights_path, nms_dist, conf_thresh, nn_thresh, cuda):
@@ -29,16 +31,21 @@ class SuperPointFrontend(object):
             self.net.load_state_dict(torch.load(weights_path, map_location=lambda storage, loc: storage))
         self.net.train()
 
-    def run(self, img):
-
-        assert img.ndim == 3, 'Image must be grayscale.'
-        assert img.dtype == np.float32, 'Image must be float32.'
-        H, W = img.shape[1], img.shape[2]
-        inp = img.copy()
-        inp = (inp.reshape(2, H, W))
-        inp = torch.from_numpy(inp)
-        inp = torch.autograd.Variable(inp).view(2, 1, H, W)
-
+    def run(self, img, already_torch=False):
+        if not already_torch:
+            assert img.ndim == 3, 'Image must be grayscale.'
+            assert img.dtype == np.float32, 'Image must be float32.'
+            H, W = img.shape[1], img.shape[2]
+            inp = img.copy()
+            inp = (inp.reshape(2, H, W))
+            inp = torch.from_numpy(inp)
+            inp = torch.autograd.Variable(inp).view(2, 1, H, W)
+        else:
+            # set H, W, inp accordingly
+            assert len(img.shape) == 3, 'Image must be grayscale.'
+            assert img.dtype == torch.float32, 'Image must be float32.'
+            H, W = img.shape[1], img.shape[2]
+            inp = img.view(2, 1, H, W)
 
         if self.cuda:
             inp = inp.cuda()
@@ -73,7 +80,7 @@ class SuperPointFrontend(object):
         prob_map = heat_map.data.cpu().numpy()
 
         xs1, ys1 = np.where(prob_map[0, :, :] >= self.conf_thresh)  # Confidence threshold.
-        print(len(xs1))
+        # print(len(xs1))
         return heat_map, coarse_desc, no_dust, coarse_desc_org
 
     def key_pt_sampling(self, img, heat_map, sampl_pts, coarse_desc):
@@ -178,6 +185,130 @@ class SuperPointFrontend(object):
         inv_prob_arr = np.asarray(inv_prob_stack)
 
         return pts_stack, desc_stack, inv_prob_arr
+
+    def run_for_eval(self, img, already_torch=False):
+        if not already_torch:
+            assert img.ndim == 2 #Image must be grayscale.
+            assert img.dtype == np.float32 #Image must be float32.
+            H, W = img.shape[0], img.shape[1]
+            inp = img.copy()
+            inp = (inp.reshape(1, H, W))
+            inp = torch.from_numpy(inp)
+            inp = torch.autograd.Variable(inp).view(1, 1, H, W)
+        else:
+            assert len(img.shape) == 2 #Image must be grayscale.
+            assert img.dtype == torch.float32 #Image must be float32.
+            H, W = img.shape[0], img.shape[1]
+            inp = img.view(1, 1, H, W)
+        
+        if self.cuda:
+            inp = inp.cuda()
+        # Forward pass of network.
+        outs = self.net.forward(inp)
+        semi, coarse_desc = outs[0], outs[1]
+        # Convert pytorch -> numpy.
+        semi = semi.data.cpu().numpy().squeeze()
+        
+        # --- Process points.
+        dense = np.exp(semi) # Softmax.
+        dense = dense / (np.sum(dense, axis=0)+.00001) # Should sum to 1.
+        nodust = dense[:-1, :, :]
+        # Reshape to get full resolution heatmap.
+        Hc = int(H / self.cell)
+        Wc = int(W / self.cell)
+        nodust = np.transpose(nodust, [1, 2, 0])
+        heatmap = np.reshape(nodust, [Hc, Wc, self.cell, self.cell])
+        heatmap = np.transpose(heatmap, [0, 2, 1, 3])
+        heatmap = np.reshape(heatmap, [Hc*self.cell, Wc*self.cell]) 
+        prob_map = heatmap/np.sum(np.sum(heatmap))
+        
+        return heatmap, coarse_desc
+    
+    def nms_fast(self, in_corners, H, W, dist_thresh):
+
+        grid = np.zeros((H, W)).astype(int) # Track NMS data.
+        inds = np.zeros((H, W)).astype(int) # Store indices of points.
+        # Sort by confidence and round to nearest int.
+        inds1 = np.argsort(-in_corners[2,:])
+        corners = in_corners[:,inds1]
+        rcorners = corners[:2,:].round().astype(int) # Rounded corners.
+        # Check for edge case of 0 or 1 corners.
+        if rcorners.shape[1] == 0:
+            return np.zeros((3,0)).astype(int), np.zeros(0).astype(int)
+        if rcorners.shape[1] == 1:
+            out = np.vstack((rcorners, in_corners[2])).reshape(3,1)
+            return out, np.zeros((1)).astype(int)
+        # Initialize the grid.
+        for i, rc in enumerate(rcorners.T):
+            grid[rcorners[1,i], rcorners[0,i]] = 1
+            inds[rcorners[1,i], rcorners[0,i]] = i
+        # Pad the border of the grid, so that we can NMS points near the border.
+        pad = dist_thresh
+        grid = np.pad(grid, ((pad,pad), (pad,pad)), mode='constant')
+        # Iterate through points, highest to lowest conf, suppress neighborhood.
+        count = 0
+        for i, rc in enumerate(rcorners.T):
+          # Account for top and left padding.
+            pt = (rc[0]+pad, rc[1]+pad)
+            if grid[pt[1], pt[0]] == 1: # If not yet suppressed.
+                grid[pt[1]-pad:pt[1]+pad+1, pt[0]-pad:pt[0]+pad+1] = 0
+                grid[pt[1], pt[0]] = -1
+                count += 1
+        # Get all surviving -1's and return sorted array of remaining corners.
+        keepy, keepx = np.where(grid==-1)
+        keepy, keepx = keepy - pad, keepx - pad
+        inds_keep = inds[keepy, keepx]
+        out = corners[:, inds_keep]
+        values = out[-1, :]
+        inds2 = np.argsort(-values)
+        out = out[:, inds2]
+        out_inds = inds1[inds_keep[inds2]]
+        return out, out_inds
+
+    def key_pt_sampling_for_eval(self, img, heat_map, coarse_desc, sampled):
+        
+        H, W = img.shape[0], img.shape[1]
+
+        xs, ys = np.where(heat_map >= self.conf_thresh) # Confidence threshold.
+        if len(xs) == 0:
+            return np.zeros((3, 0)), None, None
+        # print("number of pts selected :", len(xs))
+        
+        
+        pts = np.zeros((3, len(xs))) # Populate point data sized 3xN.
+        pts[0, :] = ys
+        pts[1, :] = xs
+        pts[2, :] = heat_map[xs, ys]
+        pts, _ = self.nms_fast(pts, H, W, dist_thresh=self.nms_dist) # Apply NMS.
+        inds = np.argsort(pts[2,:])
+        pts = pts[:,inds[::-1]] # Sort by confidence.
+        bord = self.border_remove
+        toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W-bord))
+        toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H-bord))
+        toremove = np.logical_or(toremoveW, toremoveH)
+        pts = pts[:, ~toremove]
+        pts = pts[:,0:sampled] #we take 2000 keypoints with highest probability from heatmap for our benchmark
+        
+        # --- Process descriptor.
+        D = coarse_desc.shape[1]
+        if pts.shape[1] == 0:
+            desc = np.zeros((D, 0))
+        else:
+          # Interpolate into descriptor map using 2D point locations.
+            samp_pts = torch.from_numpy(pts[:2, :].copy())
+            samp_pts[0, :] = (samp_pts[0, :] / (float(W)/2.)) - 1.
+            samp_pts[1, :] = (samp_pts[1, :] / (float(H)/2.)) - 1.
+            samp_pts = samp_pts.transpose(0, 1).contiguous()
+            samp_pts = samp_pts.view(1, 1, -1, 2)
+            samp_pts = samp_pts.float()
+            if self.cuda:
+                samp_pts = samp_pts.cuda()            
+            desc = nn.functional.grid_sample(coarse_desc, samp_pts)
+            desc = desc.data.cpu().numpy().reshape(D, -1)
+            desc /= np.linalg.norm(desc, axis=0)[np.newaxis, :]
+
+            
+        return pts, desc
 
 class CNFrontend(object):
     def __init__(self, weights_path, blocks, cuda=True):
@@ -311,6 +442,7 @@ def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, im
 
     K1 = cal_db[db_index][img1_idx][0]
     K2 = cal_db[db_index][img2_idx][0]
+    # print("Debug: contents of K1 and K2:", K1, K2, flush=True)
 
     pts1 = cv2.undistortPoints(pts1, K1, None)
     pts2 = cv2.undistortPoints(pts2, K2, None)
@@ -351,6 +483,8 @@ def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, im
     GT_t2 = cal_db[db_index][img2_idx][2]
     GT_t_Rel = GT_t2.T - np.matmul(GT_R_Rel, GT_t1.T)
 
+    # print("Shape of GT_[R,t]_Rel:", GT_R_Rel.shape, GT_t_Rel.shape, flush=True)
+
     # print("Ground Truth:")
     # print(GT_R_Rel)
     # print(GT_t_Rel)
@@ -361,6 +495,8 @@ def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, im
 
     dT = float(np.dot(GT_t_Rel.T, t))
     dT /= float(np.linalg.norm(GT_t_Rel))
+    if dT > 1.: dT = 1.
+    if dT < -1.: dT = -1.
     dT = math.acos(dT) * 180 / math.pi
 
     tot_loss[0, 0] = np.amax([dR, dT])
@@ -370,3 +506,150 @@ def error_calculator(pts_stack, desc_stack, lamda, matches, cal_db, img1_idx, im
     if (tot_loss[0, 0] > 75):
         tot_loss[0, 0] = 75
     return tot_loss
+
+
+def error_calculator_of_gluefactory(pts_stack, desc_stack, lamda, matches, K1, K2, GT_R_Rel, GT_t_Rel, inlierThreshold, im_size1, im_size2, ransac_type=0):
+    desc1 = desc_stack[0].T
+    desc2 = desc_stack[1].T
+    tot_loss = np.zeros((1, 1))
+    pts1 = np.zeros((1, matches, 2))
+    pts2 = np.zeros((1, matches, 2))
+    tot_loss = np.zeros((1, 1))
+
+    pts1[0, :, :] = pts_stack[0].T[:, 0:2]
+    pts2[0, :, :] = pts_stack[1].T[:, 0:2]
+
+    # K1 = cal_db[db_index][img1_idx][0]
+    # K2 = cal_db[db_index][img2_idx][0]
+
+    pts1 = cv2.undistortPoints(pts1, K1, None)
+    pts2 = cv2.undistortPoints(pts2, K2, None)
+    K = np.eye(3, 3)
+
+    if ransac_type == 0:
+        E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.FM_RANSAC, threshold=inlierThreshold)
+    elif ransac_type == 1:
+        E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.FM_PROSAC, threshold=inlierThreshold)
+    else:# ransac_type == 2:
+        # print("Concat shape: ", np.concatenate((pts1, pts2), axis=-1).shape)
+        E, mask = pygcransac.findEssentialMatrix(
+            np.ascontiguousarray(np.concatenate((pts1, pts2), axis=-1)[:,0,:]), 
+            K, K,
+            im_size1[0], im_size1[1], im_size2[0], im_size2[1],
+            probabilities = [],
+            threshold = inlierThreshold,
+            conf = 0.99999, # RANSAC confidence
+            max_iters = 1000,
+            min_iters = 1000,
+            sampler = 0) # Uniform Sampler
+        mask = mask.reshape(-1, 1).astype(np.uint8)
+    # print("mask type and contents: ", type(mask), mask.shape, mask.dtype, flush=True)
+    # exit(0)
+    inliers, R, t, mask = cv2.recoverPose(E, pts1, pts2, K, mask=mask)
+
+    #     print("Found %d good matches." % len(matches), "Final inlier count: ", inliers)
+
+    # print("Ground Truth:")
+    # print(GT_R_Rel)
+    # print(GT_t_Rel)
+    # TODO: Make sure the shape of R and t are the same as before
+
+    dR = np.matmul(R, np.transpose(GT_R_Rel))
+    dR = cv2.Rodrigues(dR)[0]
+    dR = np.linalg.norm(dR) * 180 / math.pi
+
+    dT = float(np.dot(GT_t_Rel.T, t))
+    dT /= float(np.linalg.norm(GT_t_Rel))
+    if dT > 1.: dT = 1.
+    if dT < -1.: dT = -1.
+    dT = math.acos(dT) * 180 / math.pi
+
+    tot_loss[0, 0] = np.amax([dR, dT])
+    tempu_loss = np.copy(tot_loss[0, 0])
+    if (tot_loss[0, 0] > 25):
+        tot_loss[0, 0] = np.sqrt(25 * tempu_loss)
+    if (tot_loss[0, 0] > 75):
+        tot_loss[0, 0] = 75
+    return tot_loss
+
+
+def error_calculator_of_gluefactory_ngransac(pts_stack, desc_stack, probs, matches, K1, K2, GT_R_Rel, GT_t_Rel, inlierThreshold, im_size1, im_size2, ransac_type=0):
+    desc1 = desc_stack[0].T
+    desc2 = desc_stack[1].T
+    tot_loss = np.zeros((1, 1))
+    pts1 = np.zeros((1, matches, 2))
+    pts2 = np.zeros((1, matches, 2))
+    tot_loss = np.zeros((1, 1))
+
+    # Warning: pts_stack is (5 * N * 1)
+    pts1[0, :, :] = pts_stack[0:2,:,0].T.cpu().numpy() # N x 2
+    pts2[0, :, :] = pts_stack[2:4,:,0].T.cpu().numpy() # N x 2
+
+    # K1 = cal_db[db_index][img1_idx][0]
+    # K2 = cal_db[db_index][img2_idx][0]
+
+    pts1 = cv2.undistortPoints(pts1, K1, None)
+    pts2 = cv2.undistortPoints(pts2, K2, None)
+    K = np.eye(3, 3)
+
+    gradients = torch.zeros(probs.size()) 
+
+    rand_seed = random.randint(0, 10000) 
+
+    if ransac_type == 0:
+        E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.FM_RANSAC, threshold=inlierThreshold)
+    elif ransac_type == 1:
+        # run NG-RANSAC
+        E = torch.zeros((3, 3)).float()
+        mask = torch.zeros(probs.size())
+        correspondences = torch.from_numpy(np.concatenate((pts1[:,0,:], pts2[:,0,:]), axis=1)).transpose(0, 1).unsqueeze(-1).float() # TODO: Check dimensions
+        # print("BEFORE correspondences dtype: ", correspondences.dtype, "probs shape: ", probs.dtype, flush=True)
+        threshold = 4*inlierThreshold / (K1[0, 0] + K1[1, 1] + K2[0, 0] + K2[1, 1])
+        incount = ngransac.find_essential_mat(correspondences, probs, rand_seed, 16, inlierThreshold, E, mask, gradients)		
+        incount /= correspondences.size(2)
+        mask = mask.byte().numpy().ravel()
+        pts1 = correspondences[0:2,...].numpy().T
+        pts2 = correspondences[2:4,...].numpy().T
+        E = E.double().numpy()
+        # print("AFTER pts1 shape: ", pts1.shape, "pts2 shape: ", pts2.shape, "probs shape: ", probs.shape, flush=True)
+    else:# ransac_type == 2:
+        # print("Concat shape: ", np.concatenate((pts1, pts2), axis=-1).shape)
+        E, mask = pygcransac.findEssentialMatrix(
+            np.ascontiguousarray(np.concatenate((pts1, pts2), axis=-1)[:,0,:]), 
+            K, K,
+            im_size1[0], im_size1[1], im_size2[0], im_size2[1],
+            probabilities = [],
+            threshold = inlierThreshold,
+            conf = 0.99999, # RANSAC confidence
+            max_iters = 1000,
+            min_iters = 1000,
+            sampler = 0) # Uniform Sampler
+        mask = mask.reshape(-1, 1).astype(np.uint8)
+    # print("mask type and contents: ", type(mask), mask.shape, mask.dtype, flush=True)
+    # exit(0)
+    inliers, R, t, mask = cv2.recoverPose(E, pts1, pts2, K, mask=mask)
+
+    #     print("Found %d good matches." % len(matches), "Final inlier count: ", inliers)
+
+    # print("Ground Truth:")
+    # print(GT_R_Rel)
+    # print(GT_t_Rel)
+    # TODO: Make sure the shape of R and t are the same as before
+
+    dR = np.matmul(R, np.transpose(GT_R_Rel))
+    dR = cv2.Rodrigues(dR)[0]
+    dR = np.linalg.norm(dR) * 180 / math.pi
+
+    dT = float(np.dot(GT_t_Rel.T, t))
+    dT /= float(np.linalg.norm(GT_t_Rel))
+    if dT > 1.: dT = 1.
+    if dT < -1.: dT = -1.
+    dT = math.acos(dT) * 180 / math.pi
+
+    tot_loss[0, 0] = np.amax([dR, dT])
+    tempu_loss = np.copy(tot_loss[0, 0])
+    if (tot_loss[0, 0] > 25):
+        tot_loss[0, 0] = np.sqrt(25 * tempu_loss)
+    if (tot_loss[0, 0] > 75):
+        tot_loss[0, 0] = 75
+    return tot_loss, gradients

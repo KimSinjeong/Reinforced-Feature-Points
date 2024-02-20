@@ -34,6 +34,22 @@ def train_one_epoch(model_bbone: torch.nn.Module,optimizer: torch.optim.Optimize
         img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype('float32') / 255.
         img_stack.append(img2)
 
+        # print("Debug: Image shape: ", img_arr.shape, flush=True)
+        # Debug purpose visualization starts
+        # import matplotlib.pyplot as plt
+        # from matplotlib.patches import ConnectionPatch
+        # f, axarr = plt.subplots(1,2, figsize=(20,10))
+        # # print("Image name, size, shape: ", frame_ids[b], sample['imgs'][0][b].shape, sample['image_size1'][b], flush=True)
+        # axarr[0].imshow(img1, cmap='gray')
+        # axarr[1].imshow(img2, cmap='gray')
+        # # Set title
+        # plt.suptitle(f"sized {img1.shape} and {img2.shape}")
+        # img_name1 = img_files[db_index][img1_idx][:-1].split('/')[-1]
+        # img_name2 = img_files[db_index][img2_idx][:-1].split('/')[-1]
+        # plt.savefig(f"/cluster/project/cvg/students/shikim/fully-differentiable-global-sfm/visualizations_rfp/{img_name1}+{img_name2}.png")
+        # plt.clf()
+        # Debug purpose visualization ends
+
         img_arr = np.asarray(img_stack)
 
         grad_stack = []

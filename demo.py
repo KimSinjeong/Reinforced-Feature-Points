@@ -145,7 +145,6 @@ for i, vis_pair in enumerate(vis_pairs):
 
     # Sort them in the order of their distance.
     matches = sorted(matches, key = lambda x:x.distance)
-
     
     print("Found %d total matches." % len(matches))
     
@@ -157,8 +156,8 @@ for i, vis_pair in enumerate(vis_pairs):
         ratios = []
 
         for l in range(len(matches)):               
-            pts1.append(pts_1[0:2,np.int(matches[l].queryIdx)])
-            pts2.append(pts_2[0:2,np.int(matches[l].trainIdx)]) 
+            pts1.append(pts_1[0:2,int(matches[l].queryIdx)])
+            pts2.append(pts_2[0:2,int(matches[l].trainIdx)]) 
 
         pts1 = np.array([pts1])
         pts2 = np.array([pts2])
